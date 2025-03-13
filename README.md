@@ -75,11 +75,3 @@ Currently in active development:
    - Extract relevant metadata (dates, topics, guests)
 2. Create initial sentiment analysis pipeline
 3. Implement topic modeling to identify political discussions
-
-## Contributing
-
-This project is open for contributions. Please read the contributing guidelines before submitting pull requests.
-
-## License
-
-[License details to be determined]
