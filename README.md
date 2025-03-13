@@ -1,6 +1,6 @@
 # JRE Political Sentiment Analysis
 
-This project aims to analyze the evolution of Joe Rogan's political leanings through sentiment analysis of The Joe Rogan Experience (JRE) podcast transcripts over the past decade (2013-2023).
+This project aims to analyze the evolution of Joe Rogan's political leanings through sentiment analysis of The Joe Rogan Experience (JRE) podcast transcripts.
 
 ## Project Goals
 
