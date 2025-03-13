@@ -1,18 +1,20 @@
 """
-Script to fetch transcripts from Joe Rogan Experience YouTube videos.
+Script to fetch transcripts from Joe Rogan Experience YouTube videos and store them in PostgreSQL.
 """
 
 import os
-from typing import List, Dict
-import json
-from datetime import datetime
 import time
-from tqdm import tqdm
+from typing import List, Dict, Optional
+from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import pandas as pd
 from dotenv import load_dotenv
+import sys
+
+# Add the parent directory to the path so we can import the database module
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database.db_manager import DatabaseManager
 
 load_dotenv()
 
@@ -20,13 +22,12 @@ class JRETranscriptFetcher:
     def __init__(self):
         self.api_key = os.getenv('YOUTUBE_API_KEY')
         self.youtube = build('youtube', 'v3', developerKey=self.api_key)
-        # JRE Clips channel
         self.channel_id = "UCnxGkOGNMqQEUMvroOWps6Q"  # JRE Clips channel ID
-        self.output_dir = "../data/raw_transcripts"
+        self.db = DatabaseManager()
         
-    def get_transcript_with_backoff(self, video_id):
+    def get_transcript_with_backoff(self, video_id: str) -> Optional[List[Dict]]:
         """
-        Attempt to get transcript with exponential backoff for rate limiting
+        Attempt to get transcript with exponential backoff for rate limiting.
         """
         max_attempts = 3
         attempt = 0
@@ -39,9 +40,10 @@ class JRETranscriptFetcher:
                     time.sleep(wait_time)
                     attempt += 1
                 else:
-                    raise e
+                    print(f"Transcript error for {video_id}: {str(e)}")
+                    return None
         return None
-        
+
     def search_political_videos(self, max_results: int = 50) -> List[Dict]:
         """
         Search for JRE videos with political content using relevant keywords.
@@ -54,27 +56,19 @@ class JRETranscriptFetcher:
             # Political parties and ideologies
             "democrat", "republican", "liberal", "conservative",
             "libertarian", "progressive", "left wing", "right wing",
-            "socialism", "capitalism", "marxism",
             # Government and policy
             "policy", "government", "congress", "senate",
-            "legislation", "law", "regulation",
             # Political figures
-            "trump", "biden", "obama", "clinton", "sanders",
-            "desantis", "aoc", "pelosi", "mcconnell",
+            "trump", "biden", "obama", "clinton",
             # Current political issues
-            "immigration", "border", "gun control", "healthcare",
-            "climate change", "foreign policy", "war", "military",
-            "censorship", "free speech", "cancel culture",
-            # Political events
-            "january 6", "protest", "riot", "supreme court",
-            "presidential", "campaign", "debate"
+            "immigration", "healthcare", "climate change", "foreign policy",
+            "censorship", "free speech"
         ]
         
         videos = []
         for keyword in political_keywords:
             try:
-                # Search in chronological order from 2017
-                # Get more detailed video information
+                print(f"Searching for videos with keyword: {keyword}")
                 request = self.youtube.search().list(
                     part="snippet",
                     channelId=self.channel_id,
@@ -83,7 +77,7 @@ class JRETranscriptFetcher:
                     maxResults=max_results,
                     publishedAfter="2017-01-01T00:00:00Z",
                     publishedBefore="2025-01-01T00:00:00Z",
-                    order="relevance"  # Changed to relevance to get most relevant political content
+                    order="relevance"
                 )
                 response = request.execute()
                 
@@ -107,84 +101,80 @@ class JRETranscriptFetcher:
                         if video_response['items']:
                             stats = video_response['items'][0]['statistics']
                             video_data.update({
-                                'view_count': stats.get('viewCount'),
-                                'like_count': stats.get('likeCount'),
-                                'comment_count': stats.get('commentCount'),
+                                'view_count': int(stats.get('viewCount', 0)),
+                                'like_count': int(stats.get('likeCount', 0)),
+                                'comment_count': int(stats.get('commentCount', 0)),
                                 'duration': video_response['items'][0]['contentDetails']['duration']
                             })
                     except Exception as e:
                         print(f"Error getting additional details for video {item['id']['videoId']}: {e}")
-                    if video_data not in videos:
+                    
+                    if not any(v['video_id'] == video_data['video_id'] for v in videos):
                         videos.append(video_data)
+                        print(f"Found video: {video_data['title']}")
+                
+                time.sleep(1)  # Rate limiting between keyword searches
                         
             except HttpError as e:
                 print(f"Error searching for videos with keyword '{keyword}': {e}")
+                time.sleep(5)  # Longer wait on error
                 
         return videos
-    
-    def fetch_transcript(self, video_id: str) -> List[Dict]:
+
+    def process_video(self, video_data: Dict) -> bool:
         """
-        Fetch transcript for a specific video with improved error handling.
+        Process a single video: fetch transcript and store in database.
+        Returns True if successful, False otherwise.
         """
-        try:
-            transcript = self.get_transcript_with_backoff(video_id)
-            return transcript
-        except Exception as e:
-            error_message = str(e)
-            if "Subtitles are disabled" in error_message:
-                print(f"Video {video_id} has subtitles disabled")
-            elif "age-restricted" in error_message:
-                print(f"Video {video_id} is age-restricted and requires authentication")
-            else:
-                print(f"Error fetching transcript for video {video_id}: {e}")
-            return None
-    
-    def save_transcript(self, video_id: str, video_data: Dict, transcript: List[Dict]):
-        """
-        Save transcript and metadata to JSON file.
-        """
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            
-        output_data = {
-            'video_id': video_id,
-            'metadata': video_data,
-            'transcript': transcript,
-            'fetch_date': datetime.now().isoformat()
-        }
+        video_id = video_data['video_id']
         
-        filename = f"{self.output_dir}/{video_id}.json"
-        with open(filename, 'w') as f:
-            json.dump(output_data, f, indent=2)
+        # Check if video already exists in database
+        if self.db.get_video(video_id):
+            print(f"Video {video_id} already exists in database, skipping...")
+            return False
+        
+        try:
+            # Get transcript
+            transcript = self.get_transcript_with_backoff(video_id)
+            if not transcript:
+                print(f"No transcript available for video {video_id}")
+                return False
             
+            # Store video in database
+            video = self.db.add_video(video_data)
+            if not video:
+                print(f"Failed to add video {video_id} to database")
+                return False
+            
+            # Store transcript segments
+            self.db.add_transcript_segments(video_id, transcript)
+            print(f"Successfully processed video {video_id}: {video_data['title']}")
+            return True
+            
+        except Exception as e:
+            print(f"Error processing video {video_id}: {e}")
+            return False
+
     def process_videos(self, max_videos: int = 100):
         """
-        Main function to process videos and save transcripts.
-        Includes rate limiting and progress tracking.
+        Main function to process videos and store in database.
         """
+        # Initialize database if needed
+        self.db.init_db()
+        
+        # Search for political videos
         videos = self.search_political_videos(max_videos)
-        print(f"Found {len(videos)} potentially relevant videos")
+        print(f"\nFound {len(videos)} potentially relevant videos")
         
-        # Create progress bar
-        pbar = tqdm(videos, desc="Processing videos")
+        # Process each video
+        successful = 0
+        for i, video in enumerate(videos, 1):
+            print(f"\nProcessing video {i}/{len(videos)}")
+            if self.process_video(video):
+                successful += 1
+            time.sleep(1)  # Rate limiting
         
-        for video in pbar:
-            video_id = video['video_id']
-            pbar.set_description(f"Processing video {video_id}")
-            
-            # Check if we already have this transcript
-            if os.path.exists(f"{self.output_dir}/{video_id}.json"):
-                pbar.set_description(f"Skipping existing video {video_id}")
-                continue
-            
-            transcript = self.fetch_transcript(video_id)
-            
-            if transcript:
-                self.save_transcript(video_id, video, transcript)
-                pbar.set_description(f"Saved transcript for {video_id}")
-            
-            # Rate limiting - wait 1 second between requests
-            time.sleep(1)
+        print(f"\nSuccessfully processed {successful} out of {len(videos)} videos")
 
 if __name__ == "__main__":
     fetcher = JRETranscriptFetcher()
