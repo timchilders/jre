@@ -1,0 +1,13 @@
+youtube-transcript-api
+google-api-python-client
+pandas
+numpy
+nltk
+textblob
+scikit-learn
+matplotlib
+seaborn
+spacy
+transformers
+torch
+python-dotenv
