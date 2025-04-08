@@ -1,16 +1,19 @@
-youtube-transcript-api
-google-api-python-client
+streamlit
 pandas
+plotly
+python-dotenv
+google-api-python-client
+youtube-transcript-api
+sqlalchemy
+psycopg2-binary
+psycopg2
 numpy
 nltk
 textblob
 scikit-learn
 matplotlib
 seaborn
-spacy
+# spacy
 transformers
 torch
-python-dotenv
-psycopg2-binary
-sqlalchemy
 alembic
